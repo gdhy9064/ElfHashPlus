@@ -939,8 +939,19 @@ int dump_gnuhash64(char *base, const char *test_str)
 
   obj_state_t* os = (obj_state_t*)malloc(sizeof(obj_state_t));
   os->dynsymcount = dynsym->sh_size/dynsym->sh_entsize;
-  os->rela_dyn_count = rela_dyn_shdr->sh_size / rela_dyn_shdr->sh_entsize;
-  os->rela_plt_count = rela_plt_shdr->sh_size / rela_plt_shdr->sh_entsize;
+  if(rela_dyn_shdr == NULL){
+    os->rela_dyn_count = 0;
+  }else{
+    os->rela_dyn_count = rela_dyn_shdr->sh_size / rela_dyn_shdr->sh_entsize;
+    os->os_rela_dyn = (ElfXX_Rela*)(base + rela_dyn_shdr->sh_offset);
+  }
+  if(rela_plt_shdr == NULL){
+    os->rela_plt_count = 0;
+  }else{
+    os->rela_plt_count = rela_plt_shdr->sh_size / rela_plt_shdr->sh_entsize;
+    os->os_rela_plt = (ElfXX_Rela*)(base + rela_plt_shdr->sh_offset);
+  }
+  
   os->os_dynsym = (ElfXX_Sym*)(base+dynsym->sh_offset);
   os->os_dynstr = (const char*)(base+dynstr->sh_offset);
   os->os_nbuckets = hash_hdr->nbuckets;
@@ -953,8 +964,6 @@ int dump_gnuhash64(char *base, const char *test_str)
 		  hash_hdr->maskwords*sizeof(ELFXX_BloomWord)+hash_hdr->nbuckets*sizeof(ElfXX_Word));
 
   os->os_versym = (ElfXX_Versym*)(base + versym_shdr->sh_offset);
-  os->os_rela_dyn = (ElfXX_Rela*)(base + rela_dyn_shdr->sh_offset);
-  os->os_rela_plt = (ElfXX_Rela*)(base + rela_plt_shdr->sh_offset);
 
 
   printf("os_buckets=%d\n", os->os_nbuckets);
@@ -1009,8 +1018,18 @@ int rehash64(char *base, const char *new_func)
 		obj_state_t* os = (obj_state_t*)malloc(sizeof(obj_state_t));
 		os->dynsymcount = dynsym->sh_size/dynsym->sh_entsize;
 
-    os->rela_dyn_count = rela_dyn_shdr->sh_size / rela_dyn_shdr->sh_entsize;
-    os->rela_plt_count = rela_plt_shdr->sh_size / rela_plt_shdr->sh_entsize;
+    if(rela_dyn_shdr == NULL){
+      os->rela_dyn_count = 0;
+    }else{
+      os->rela_dyn_count = rela_dyn_shdr->sh_size / rela_dyn_shdr->sh_entsize;
+      os->os_rela_dyn = (ElfXX_Rela*)(base + rela_dyn_shdr->sh_offset);
+    }
+    if(rela_plt_shdr == NULL){
+      os->rela_plt_count = 0;
+    }else{
+      os->rela_plt_count = rela_plt_shdr->sh_size / rela_plt_shdr->sh_entsize;
+      os->os_rela_plt = (ElfXX_Rela*)(base + rela_plt_shdr->sh_offset);
+    }
 		os->os_dynsym = (ElfXX_Sym*)(base+dynsym->sh_offset);
 		os->os_dynstr = (const char*)(base+dynstr->sh_offset);
 		os->os_nbuckets = gnuhash->nbuckets;
@@ -1025,8 +1044,6 @@ int rehash64(char *base, const char *new_func)
 
     os->os_versym = (ElfXX_Versym*)(base + versym_shdr->sh_offset);
 
-    os->os_rela_dyn = (ElfXX_Rela*)(base + rela_dyn_shdr->sh_offset);
-    os->os_rela_plt = (ElfXX_Rela*)(base + rela_plt_shdr->sh_offset);
 		int ret = symhash_rebuild(os, new_func);
 		free(os);
 		return ret;
