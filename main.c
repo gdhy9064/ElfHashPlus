@@ -44,12 +44,12 @@ static int rename_func(char *base, const char *old_func, const char *new_func)
  return -1;
 }
 
-static int rehash(char *base)
+static int rehash(char *base, const char *new_func)
 {
  if(is_32bit_elf(base))
-    return rehash32(base);
+    return rehash32(base, new_func);
  if(is_64bit_elf(base))
-    return rehash64(base);
+    return rehash64(base, new_func);
  return -1;
 }
 static int convert_gnu_to_sysv(char *base, unsigned long size, unsigned long gap)
@@ -76,12 +76,12 @@ unsigned long elfhash_compute_gap(void*base)
  return -1;
 }
 #ifdef ZZZ_KEEP_GNU_HASH
-static int elfhash_dump_gnuhash(char *base)
+static int elfhash_dump_gnuhash(char *base, const char *test_str)
 {
  if(is_32bit_elf(base))
-   return dump_gnuhash32(base);
+   return dump_gnuhash32(base, test_str);
  if(is_64bit_elf(base))
-   return dump_gnuhash64(base);
+   return dump_gnuhash64(base, test_str);
  return -1;
 }
 #endif
@@ -92,13 +92,12 @@ static void elfhash_usage(const char*name)
   printf("\t\t\t---By Cjacker <cjacker@gmail.com>\n\n");
   printf("Usage: %s <options> file\n\n", name);
   printf("Options:\n");
-  printf("  --  if without any options, always convert .gnu.hash to .hash if it exists\n\n");
   printf("  -l  list elf contents\n\n");
-  printf("  -r  rehash elf sysv style hash after change elf symbol manually\n");
-  printf("      NOT work with gnu style hash, you need convert it first\n\n");
-  printf("  -f oldname -t newname \n");
-  printf("      replace the dynamic symbol from oldname to newname and rehash the elf\n");
-  printf("      if elf file contains a gnu style hash, it will be convert to sysv hash\n\n");
+  printf("  -r  rehash gnu.hash\n\n");
+  printf("  -f  oldname -t newname \n");
+  printf("      replace the dynamic symbol from oldname to newname and rehash the elf\n\n");
+  printf("  -s  name_to_search \n");
+  printf("      search the symbol name\n\n");
   printf("  -h  display this message\n");
   exit(0);
 }
@@ -110,12 +109,13 @@ struct globalArgs_t {
   int reh;   //-r  rehash
   char *old_func; //-f old function be renamed.
   char *new_func; //-t new function rename to.
+  char *search_func; //-t new function rename to.
   char **inputFiles; // input file;
   int numInputFiles; // count of input file, should always be 1. this is we limited.
 } globalArgs;
 
 
-static const char *optString = "lhrcf:t:";
+static const char *optString = "lhrcf:s:t:";
 
 int main(int argc, char**argv)
 {
@@ -129,6 +129,7 @@ int main(int argc, char**argv)
   globalArgs.reh = 0;
   globalArgs.old_func = NULL;
   globalArgs.new_func = NULL;
+  globalArgs.search_func = NULL;
   globalArgs.inputFiles = NULL;
   globalArgs.numInputFiles = 0;
 
@@ -146,6 +147,9 @@ int main(int argc, char**argv)
       break;
     case 't':
       globalArgs.new_func = optarg;
+      break;
+    case 's':
+      globalArgs.search_func = optarg;
       break;
     case 'h':
       elfhash_usage(argv[0]);
@@ -178,8 +182,8 @@ int main(int argc, char**argv)
 
 
   /* ** file init */
-  //const char *filename = globalArgs.inputFiles[0];
-  const char *filename = "/home/vargo/work/tmp/libacdoec/arm/libacodec.so";
+  const char *filename = globalArgs.inputFiles[0];
+  // const char *filename = "/home/vargo/work/tmp/libacdoec/arm/libacodec.so";
 
 
   int fd = open(filename, O_RDWR);
@@ -213,14 +217,20 @@ int main(int argc, char**argv)
  
   //if there is .gnu.hash exist, convert it except you use -l option
   if(has_gnuhash(base) && !globalArgs.list) {
+
 #ifdef ZZZ_KEEP_GNU_HASH
+
 	  // print gnu hash info
-	  elfhash_dump_gnuhash(base);
-	  //munmap(base, size);
-	  //base = mmap(NULL, size, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
-	  //rehash(base);
-	  close(fd);
-	  return 0;
+	  // elfhash_dump_gnuhash(base);
+	  // munmap(base, size);
+	  // base = mmap(NULL, size, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+    // int ret = rename_func(base, globalArgs.old_func, globalArgs.new_func);
+    // //after rename, rehash
+    // if(ret)
+    //   rehash(base, globalArgs.new_func);
+	  // close(fd);
+
+	  // return 0;
 #else
     /* Calculate gap */
     unsigned long gap = elfhash_compute_gap(base);
@@ -239,7 +249,6 @@ int main(int argc, char**argv)
     convert_gnu_to_sysv(base, size, gap);
 #endif
   }
-
   //process options.
   if(globalArgs.list) {
      /* show elf contents */
@@ -250,14 +259,16 @@ int main(int argc, char**argv)
     munmap(base, size);
     base = mmap(NULL, size, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
     //rehash
-    rehash(base);
+    rehash(base, "");
   } else if(globalArgs.old_func || globalArgs.new_func) {
       munmap(base, size);
       base = mmap(NULL, size, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
       int ret = rename_func(base, globalArgs.old_func , globalArgs.new_func);
       //after rename, rehash
       if(ret)
-        rehash(base);
+        rehash(base, globalArgs.new_func);
+  } else if(globalArgs.search_func) {
+    elfhash_dump_gnuhash(base, globalArgs.search_func);
   }
  
   close(fd);

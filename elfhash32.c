@@ -36,6 +36,11 @@
   #define ELFXX_Verneed Elf32_Verneed
   #define ELFXX_Vernaux Elf32_Vernaux
   #define ELFXX_Verndef Elf32_Verdef
+  #define ElfXX_Versym Elf32_Versym
+  #define ElfXX_Rela Elf32_Rela
+  #define ELFXX_R_SYM ELF32_R_SYM
+  #define ELFXX_R_TYPE ELF32_R_TYPE
+  #define ELFXX_R_INFO ELF32_R_INFO
 #elif ( ELFCLASS == 64)
   #define ElfXX Elf64
   #define ElfXX_Ehdr  Elf64_Ehdr
@@ -52,6 +57,11 @@
   #define ELFXX_Verneed Elf64_Verneed
   #define ELFXX_Vernaux Elf64_Vernaux
   #define ELFXX_Verndef Elf64_Verdef
+  #define ElfXX_Versym Elf64_Versym
+  #define ElfXX_Rela Elf64_Rela
+  #define ELFXX_R_SYM ELF64_R_SYM
+  #define ELFXX_R_TYPE ELF64_R_TYPE
+  #define ELFXX_R_INFO ELF64_R_INFO
 #else
   #error "ELFCLASS undefined."
 #endif
@@ -97,12 +107,17 @@ typedef struct _obj_state_t {
     ElfXX_Sym            *os_dynsym;      /* Dynamic symbol table */
     ElfXX_Word            os_nbuckets;     /* # hash buckets */
     ElfXX_Word            os_symndx;       /* Index of 1st dynsym in hash */
-    ElfXX_Word            os_maskwords_bm; /* # Bloom filter words, minus 1 */
+    ElfXX_Word            os_maskwords_bm; /* # Bloom filter words*/
     ElfXX_Word            os_shift2;       /* Bloom filter hash shift */
     ELFXX_BloomWord      *os_bloom;       /* Bloom filter words */
     ElfXX_Word           *os_buckets;     /* Hash buckets */
     ElfXX_Word           *os_hashval;     /* Hash value array */
+    ElfXX_Versym           *os_versym;
+    ElfXX_Rela           *os_rela_dyn;
+    ElfXX_Rela           *os_rela_plt;
     int dynsymcount;
+    int rela_dyn_count;
+    int rela_plt_count;
 } obj_state_t;
 static ElfXX_Addr dl_new_hash (const char *s)
 {
@@ -147,7 +162,7 @@ static ElfXX_Sym *symhash_lookup(obj_state_t *os, const char *symname)
 			return (NULL);
 	sym = &os->os_dynsym[n];
 	hashval = &os->os_hashval[n - os->os_symndx];
-	printf("symhash_lookup bucket=%d, bucket[%d]=%d, hash_n=%d, hashval=0x%x\n", bucket, bucket, n, n - os->os_symndx, (*hashval));
+	printf("symhash_lookup bucket=%d, bucket[%d]=%d, hash_n=%d\n", bucket, bucket, n, n - os->os_symndx);
 
 	/*
 	 * Walk the chain until the symbol is found or
@@ -199,6 +214,10 @@ static int symhash_rebuild(obj_state_t *os, const char* test_str){
 	ELFXX_BloomWord *bloom = (ELFXX_BloomWord *)malloc(sizeof(ELFXX_BloomWord)*bloomwords);
 	ElfXX_Word *buckets = (ElfXX_Word *)malloc(sizeof(ElfXX_Word)*nbucket);
 	ElfXX_Word *hashval = (ElfXX_Word *)malloc(sizeof(ElfXX_Word)*hashval_cnt);
+  if(bloom == NULL || buckets == NULL || hashval == NULL){
+    printf("malloc failed");
+    exit(0);
+  }
 	memset(bloom, 0, sizeof(ELFXX_BloomWord)*bloomwords);
 	memset(buckets, 0, sizeof(ElfXX_Word)*nbucket);
 	memset(hashval, 0, sizeof(ElfXX_Word)*hashval_cnt);
@@ -206,20 +225,34 @@ static int symhash_rebuild(obj_state_t *os, const char* test_str){
 	// rearrange the sym index, make sure same [h1%nbuckets] objects stay together
 	// simple bubble sort
 	ElfXX_Sym *backup_syms = (ElfXX_Sym *)malloc(sizeof(ElfXX_Sym)*(os->dynsymcount-os->os_symndx));
+	ElfXX_Versym *backup_versym = (ElfXX_Versym *)malloc(sizeof(ElfXX_Versym) * (os->dynsymcount-os->os_symndx));
+  if(backup_syms == NULL || backup_versym == NULL){
+    printf("malloc failed");
+    exit(0);
+  }
 	memcpy(backup_syms, &os->os_dynsym[os->os_symndx], sizeof(ElfXX_Sym)*(os->dynsymcount-os->os_symndx));
+  memcpy(backup_versym, &os->os_versym[os->os_symndx], sizeof(ElfXX_Versym)*(os->dynsymcount-os->os_symndx));
+
 
 	int* array1 = (int*)malloc(sizeof(int)*(os->dynsymcount-os->os_symndx));
 	int* array2 = (int*)malloc(sizeof(int)*(os->dynsymcount-os->os_symndx));
+	int* array3 = (int*)malloc(sizeof(int)*(os->dynsymcount-os->os_symndx));
+  if(array1 == NULL || array2 == NULL || array3 == NULL){
+    printf("malloc failed");
+    exit(0);
+  }
 	memset(array1, 0, sizeof(int)*(os->dynsymcount-os->os_symndx));
 	memset(array2, 0, sizeof(int)*(os->dynsymcount-os->os_symndx));
+  memset(array3, 0, sizeof(int)*(os->dynsymcount-os->os_symndx));
 	for(int i=os->os_symndx;i<os->dynsymcount;i++){
 		ElfXX_Sym *sym = (ElfXX_Sym *)&os->os_dynsym[i];
 		const char *name = (const char *)&os->os_dynstr[sym->st_name];
 		ElfXX_Word h1 = dl_new_hash(name);
 		int bucket = h1%nbucket;
-		printf("i=%d, bucket=%d\n", i, bucket);
+		// printf("i=%d, bucket=%d\n", i, bucket);
 		array1[i-os->os_symndx]=bucket;
 		array2[i-os->os_symndx]=i;
+    array3[i-os->os_symndx] = i;
 	}
 	for(int i=0; i<os->dynsymcount-os->os_symndx;i++){
 		for(int j=i+1;j<os->dynsymcount-os->os_symndx; j++){
@@ -234,20 +267,60 @@ static int symhash_rebuild(obj_state_t *os, const char* test_str){
 		}
 	}
 
+
 	for(int i=os->os_symndx;i<os->dynsymcount;i++){
 		if(array2[i-os->os_symndx] != i){
-			printf("i=%d, bucket=%d, newi=%d\n", i, array1[i-os->os_symndx], array2[i-os->os_symndx]);
+      // printf("i=%d, bucket=%d, newi=%d, old_version=%d, new_version=%d\n", i, array1[i-os->os_symndx], array2[i-os->os_symndx], os->os_versym[i], backup_versym[array2[i-os->os_symndx]-os->os_symndx]);
+			
 			// change
 			memcpy(&os->os_dynsym[i], &backup_syms[array2[i-os->os_symndx]-os->os_symndx], sizeof(ElfXX_Sym));
+      memcpy(&os->os_versym[i], &backup_versym[array2[i-os->os_symndx]-os->os_symndx], sizeof(ElfXX_Versym));
 		}
 	}
-	free(array1);
-	free(array2);
-	free(backup_syms);
+
+
+
+
+  for(int i=0; i<os->dynsymcount-os->os_symndx;i++){
+    for(int j=i+1;j<os->dynsymcount-os->os_symndx; j++){
+      if(array2[i]>array2[j]){
+        int tmp = array2[i];
+        array2[i]=array2[j];
+        array2[j]=tmp;
+        tmp = array3[i];
+        array3[i]=array3[j];
+        array3[j]=tmp;
+      }
+    }
+  }
+
+
+  for(int i = 0; i < os->rela_dyn_count; i++){
+    int sym_idx = ELFXX_R_SYM(os->os_rela_dyn[i].r_info);
+    if(sym_idx < os->os_symndx){
+      continue;
+    }
+    if(array3[sym_idx - os->os_symndx] != sym_idx){
+      // printf("rela_dyn: old=%d, new=%d\n", sym_idx, array3[sym_idx - os->os_symndx]);
+      os->os_rela_dyn[i].r_info = ELFXX_R_INFO(array3[sym_idx - os->os_symndx], ELFXX_R_TYPE(os->os_rela_dyn[i].r_info));
+    }
+  }
+
+  for(int i = 0; i < os->rela_plt_count; i++){
+    int sym_idx = ELFXX_R_SYM(os->os_rela_plt[i].r_info);
+    if(sym_idx < os->os_symndx){
+      continue;
+    }
+    if(array3[sym_idx - os->os_symndx] != sym_idx){
+      // printf("rela_plt: old=%d, new=%d\n", sym_idx, array3[sym_idx - os->os_symndx]);
+      os->os_rela_plt[i].r_info = ELFXX_R_INFO(array3[sym_idx - os->os_symndx], ELFXX_R_TYPE(os->os_rela_plt[i].r_info));
+    }
+  }
 
 	for(int i=os->os_symndx;i<os->dynsymcount;i++){
 		ElfXX_Sym *sym = (ElfXX_Sym *)&os->os_dynsym[i];
 		const char *name = (const char *)&os->os_dynstr[sym->st_name];
+
 		ElfXX_Word h1 = dl_new_hash(name);
 		ElfXX_Word h2 = h1>>os->os_shift2;
 		ElfXX_Word n = ((h1/c)%bloomwords);
@@ -258,6 +331,7 @@ static int symhash_rebuild(obj_state_t *os, const char* test_str){
 
 		if(!strcmp(name, test_str)){
 			printf("symhash_rebuild %s\n h1=0x%x, n=%d, bitmask=0x%x, bloom[%d]=0x%x\n", name, h1, n, bitmask, n, bloom[n]);
+		
 		}
 		// bucket
 		int bucket = h1%nbucket;
@@ -285,10 +359,16 @@ static int symhash_rebuild(obj_state_t *os, const char* test_str){
 		}
 
 		if(os->os_hashval[hash_n]!= hashval[hash_n]){
-			printf("i=%d, name=%s, n=%d\n", i, name, n);
-			printf("i=%d, hashval hash_n=%d, old=0x%x, new=0x%x\n", i,  hash_n, os->os_hashval[hash_n], hashval[hash_n]);
+      // printf("i=%d, name=%s, n=%d\n", i, name, n);
+      // printf("i=%d, hashval hash_n=%d, old=0x%x, new=0x%x\n", i,  hash_n, os->os_hashval[hash_n], hashval[hash_n]);
 		}
 	}
+  free(array1);
+  free(array2);
+  free(array3);
+  free(backup_syms);
+  free(backup_versym);
+
 	// compare bloom
 	if(memcmp(bloom, os->os_bloom, sizeof(ELFXX_BloomWord)*bloomwords)){
 		printf("symhash_rebuild: blooms changed\n");
@@ -701,7 +781,7 @@ int convert_gnu_to_sysv64(char *base, unsigned long size, unsigned long gap)
         sym_offset < dynsyms_shdr->sh_size;
         sym_offset += dynsyms_shdr->sh_entsize, ver_offset += versym_shdr->sh_entsize) {
           ElfXX_Sym*sym = (ElfXX_Sym*)(base + dynsyms_shdr->sh_offset + sym_offset);
-          ElfXX_Half*ver = (versym_shdr == NULL) ? NULL : ((ElfXX_Half*)(base + versym_shdr->sh_offset + ver_offset));
+          ElfXX_Versym *ver = (versym_shdr == NULL) ? NULL : ((ElfXX_Versym*)(base + versym_shdr->sh_offset + ver_offset));
           if((ELFXX_ST_TYPE(sym->st_info) == STT_FUNC) ) {
               /*&& (sym->st_shndx == SHN_UNDEF)*/ /*this means not local symbols*/ 
             char*symbol = base + dynstr_shdr->sh_offset + sym->st_name;
@@ -780,9 +860,9 @@ int has_gnuhash64(char *base)
 }
 
 #if ( ELFCLASS == 32 )
-int dump_gnuhash32(char *base)
+int dump_gnuhash32(char *base, const char *test_str)
 #elif (ELFCLASS == 64 )
-int dump_gnuhash64(char *base)
+int dump_gnuhash64(char *base, const char *test_str)
 #endif
 {
   ElfXX_Shdr *gnuhash = elf_get_section_bytype(base, SHT_GNU_HASH);
@@ -824,21 +904,38 @@ int dump_gnuhash64(char *base)
 	}else{
 	  printf("zzz dump SHT_GNU_verdef offset=0x%x, size=%d, entsize=%d\n", ver_def_shdr->sh_offset, ver_def_shdr->sh_size, ver_def_shdr->sh_entsize);
 	}
+
+	ElfXX_Shdr* rela_dyn_shdr = elf_get_section_byname(base, ".rela.dyn");
+    if(rela_dyn_shdr == NULL){
+      printf("not found section .rela.dyn\n");
+    }else{
+      printf("zzz dump .rela.dyn offset=0x%x, size=%d, entsize=%d\n", rela_dyn_shdr->sh_offset, rela_dyn_shdr->sh_size, rela_dyn_shdr->sh_entsize);
+    }
+
+  ElfXX_Shdr* rela_plt_shdr = elf_get_section_byname(base, ".rela.plt");
+    if(rela_plt_shdr == NULL){
+      printf("not found section .rela.plt\n");
+    }else{
+      printf("zzz dump .rela.plt offset=0x%x, size=%d, entsize=%d\n", rela_plt_shdr->sh_offset, rela_plt_shdr->sh_size, rela_plt_shdr->sh_entsize);
+    }
+
   //https://lists.debian.org/lsb-spec/1999/12/msg00017.html
 
   int dynsymcnt = dynsym->sh_size/dynsym->sh_entsize;
   ElfXX_Sym *syms = (ElfXX_Sym*)(base+dynsym->sh_offset);
   const char* pstr = (const char*)(base+dynstr->sh_offset);
-  ElfXX_Half *versions = (ElfXX_Half *)(base+versym_shdr->sh_offset);
-  for(int i=0;i<dynsymcnt; i++){
-	  ElfXX_Sym *sym = &syms[i];
-	  printf("zzz dump sym %d: name:%s, offset=0x%x, name:0x%x, value:0x%x, size:0x%x,  info:0x%x,shndx=0x%x, version=0x%x\n",
-			  i, &pstr[sym->st_name], dynsym->sh_offset+i*(sizeof(ElfXX_Sym)), sym->st_name, sym->st_value, sym->st_size, sym->st_info, sym->st_shndx, versions[i]);
-  }
+  ElfXX_Versym *versions = (ElfXX_Versym *)(base+versym_shdr->sh_offset);
+  // for(int i=0;i<dynsymcnt; i++){
+    //   ElfXX_Sym *sym = &syms[i];
+    //   printf("zzz dump sym %d: name:%s, offset=0x%x, name:0x%x, value:0x%x, size:0x%x,  info:0x%x,shndx=0x%x, version=0x%x\n",
+    //        i, &pstr[sym->st_name], dynsym->sh_offset+i*(sizeof(ElfXX_Sym)), sym->st_name, sym->st_value, sym->st_size, sym->st_info, sym->st_shndx, versions[i]);
+  // }
 
   obj_state_t* os = (obj_state_t*)malloc(sizeof(obj_state_t));
   os->dynsymcount = dynsym->sh_size/dynsym->sh_entsize;
-  os->os_dynsym = (ElfXX_Sym*)(base+dynsym->sh_offset);
+  os->rela_dyn_count = rela_dyn_shdr->sh_size / rela_dyn_shdr->sh_entsize;
+  os->rela_plt_count = rela_plt_shdr->sh_size / rela_plt_shdr->sh_entsize;
+	os->os_dynsym = (ElfXX_Sym*)(base+dynsym->sh_offset);
   os->os_dynstr = (const char*)(base+dynstr->sh_offset);
   os->os_nbuckets = hash_hdr->nbuckets;
   os->os_symndx = hash_hdr->symndx;
@@ -849,23 +946,21 @@ int dump_gnuhash64(char *base)
   os->os_hashval = (ElfXX_Word*)(base + gnuhash->sh_offset+sizeof(ElfGnuHashHdr)+
 		  hash_hdr->maskwords*sizeof(ELFXX_BloomWord)+hash_hdr->nbuckets*sizeof(ElfXX_Word));
 
+  os->os_versym = (ElfXX_Versym*)(base + versym_shdr->sh_offset);
+  os->os_rela_dyn = (ElfXX_Rela*)(base + rela_dyn_shdr->sh_offset);
+  os->os_rela_plt = (ElfXX_Rela*)(base + rela_plt_shdr->sh_offset);
+
+
   printf("os_buckets=%d\n", os->os_nbuckets);
-  char *test_str = "Java_android_media_AudioCoder_EncodeInitJni";
   printf("hash(%s)=0x%x\n", test_str, dl_new_hash(test_str));
   ElfXX_Sym *sym = symhash_lookup(os, test_str);
   if(sym){
-	  printf("sym found for %s\n", test_str);
+	  printf("sym found for %s, version: %d\n", test_str, os->os_versym[sym - os->os_dynsym]);
+      
   }else{
 	  printf("sym not found for %s\n", test_str);
   }
-  test_str = "_ZN7android14SecAudioRecord25native_read_in_byte_arrayEPciiS1_";
-  printf("hash(%s)=0x%x\n", test_str, dl_new_hash(test_str));
-  sym = symhash_lookup(os, test_str);
-    if(sym){
-  	  printf("sym found for %s\n", test_str);
-    }else{
-  	  printf("sym not found for %s\n", test_str);
-    }
+  
 
   free(os);
 
@@ -873,9 +968,9 @@ int dump_gnuhash64(char *base)
 }
 
 #if ( ELFCLASS == 32 )
-int rehash32(char *base) 
+int rehash32(char *base, const char *new_func) 
 #elif (ELFCLASS == 64 )
-int rehash64(char *base) 
+int rehash64(char *base, const char *new_func) 
 #endif
 {
 	ElfXX_Shdr *hash_shdr = elf_get_section_bytype(base, SHT_GNU_HASH);
@@ -885,6 +980,9 @@ int rehash64(char *base)
 
 		ElfGnuHashHdr *gnuhash = (ElfGnuHashHdr*)(base + hash_shdr->sh_offset);
 		ElfXX_Shdr *dynsym = elf_get_section_bytype(base, SHT_DYNSYM);
+    ElfXX_Shdr *versym_shdr = elf_get_section_bytype(base, SHT_GNU_versym);
+    ElfXX_Shdr* rela_dyn_shdr = elf_get_section_byname(base, ".rela.dyn");
+    ElfXX_Shdr* rela_plt_shdr = elf_get_section_byname(base, ".rela.plt");
 		if(!dynsym){
 			printf("dynsym not found.\n");
 			return 0;
@@ -903,6 +1001,8 @@ int rehash64(char *base)
 		}
 		obj_state_t* os = (obj_state_t*)malloc(sizeof(obj_state_t));
 		os->dynsymcount = dynsym->sh_size/dynsym->sh_entsize;
+    os->rela_dyn_count = rela_dyn_shdr->sh_size / rela_dyn_shdr->sh_entsize;
+    os->rela_plt_count = rela_plt_shdr->sh_size / rela_plt_shdr->sh_entsize;
 		os->os_dynsym = (ElfXX_Sym*)(base+dynsym->sh_offset);
 		os->os_dynstr = (const char*)(base+dynstr->sh_offset);
 		os->os_nbuckets = gnuhash->nbuckets;
@@ -913,7 +1013,11 @@ int rehash64(char *base)
 		os->os_buckets = (ElfXX_Word*)(base + hash_shdr->sh_offset+sizeof(ElfGnuHashHdr)+gnuhash->maskwords*sizeof(ELFXX_BloomWord));
 		os->os_hashval = (ElfXX_Word*)(base + hash_shdr->sh_offset+sizeof(ElfGnuHashHdr)+
 				gnuhash->maskwords*sizeof(ELFXX_BloomWord)+gnuhash->nbuckets*sizeof(ElfXX_Word));
-		int ret = symhash_rebuild(os, "_ZN7android14SecAudioRecord25native_read_in_byte_arrayEPciiS1_");
+    os->os_versym = (ElfXX_Versym*)(base + versym_shdr->sh_offset);
+
+    os->os_rela_dyn = (ElfXX_Rela*)(base + rela_dyn_shdr->sh_offset);
+    os->os_rela_plt = (ElfXX_Rela*)(base + rela_plt_shdr->sh_offset);
+		int ret = symhash_rebuild(os, new_func);
 		free(os);
 		return ret;
 	}else {
@@ -1000,15 +1104,13 @@ int rename_func64(char *base, const char *old_func, const char *new_func)
       sym_offset < dynsyms_shdr->sh_size;
       sym_offset += dynsyms_shdr->sh_entsize, ver_offset += versym_shdr->sh_entsize) {
         ElfXX_Sym*sym = (ElfXX_Sym*)(base + dynsyms_shdr->sh_offset + sym_offset);
-        ElfXX_Half*ver = (versym_shdr == NULL) ? NULL : ((ElfXX_Half*)(base + versym_shdr->sh_offset + ver_offset));
+        ElfXX_Versym*ver = (versym_shdr == NULL) ? NULL : ((ElfXX_Versym*)(base + versym_shdr->sh_offset + ver_offset));
         if((ELFXX_ST_TYPE(sym->st_info) == STT_FUNC) ) {
           char*symbol = base + dynstr_shdr->sh_offset + sym->st_name;
           const int version = (ver == NULL) ? 1 : (int)*ver;
           if(symbol && old_func && strcmp(old_func, symbol) == 0) {
             printf("** Rename dynamic symbol: %s -> %s, ver_offset=0x%x, version=%d\n", old_func, new_func, (versym_shdr->sh_offset + ver_offset), version);
-            if(version > 1) {
-              *ver = 1;
-            }
+
             strcpy(base + dynstr_shdr->sh_offset + sym->st_name, new_func);
             result = 1; //setup return values.
             break;
